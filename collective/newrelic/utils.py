@@ -6,6 +6,16 @@ logger = logging.getLogger('collective.newrelic')
 PLACEHOLDER = "PLACEHOLDER"
 
 
+def add_nr_attr(key, value):
+    """Envía atributo a New Relic y lo escribe en log DEBUG (nivel collective.newrelic=DEBUG)."""
+    newrelic.agent.add_custom_attribute(key, value)
+    if logger.isEnabledFor(logging.DEBUG):
+        v = value
+        if isinstance(v, str) and len(v) > 350:
+            v = v[:350] + '...'
+        logger.debug("NR attr: %s=%s", key, v)
+
+
 def newrelic_wrapper(our_class, orig_func, newrelic_label):
     """Newrelic wrapper for given class/module and function.
     Params:

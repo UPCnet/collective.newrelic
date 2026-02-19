@@ -1,5 +1,5 @@
 from AccessControl import getSecurityManager
-from collective.newrelic.utils import logger
+from collective.newrelic.utils import logger, add_nr_attr
 from zope.browser.interfaces import IBrowserView
 from zope.browserresource.interfaces import IResource
 from zope.pagetemplate.interfaces import IPageTemplate
@@ -49,15 +49,50 @@ def newrelic_transaction(event):
 
             if (IBrowserView.providedBy(published) or IPageTemplate.providedBy(published)) and not IResource.providedBy(published):
                 rename_trans(transname, group='Zope2', priority=1)
+                user_id = 'anonymous'
                 user = getSecurityManager().getUser()
-                user_id = user.getId() if user else ''
-                newrelic.agent.add_custom_parameter('user', user_id)
+                if user is not None:
+                    user_id = getattr(user, 'getId', lambda: None)() or getattr(user, 'getUserName', lambda: None)() or getattr(user, 'id', None) or user_id
+                if user_id is None or user_id == '':
+                    try:
+                        from plone import api
+                        user_id = api.user.get_current().getId()
+                    except Exception:
+                        pass
+                if user_id is None or user_id == '':
+                    auth = request.get('AUTHENTICATED_USER')
+                    if auth is not None and hasattr(auth, 'getId'):
+                        user_id = auth.getId()
+                    elif auth is not None and hasattr(auth, 'getUserName'):
+                        user_id = auth.getUserName()
+                    else:
+                        user_id = request.environ.get('REMOTE_USER') if isinstance(request.environ.get('REMOTE_USER'), str) else None
+                if user_id is None or user_id == '':
+                    user_id = 'anonymous'
+                add_nr_attr('user', user_id)
+                # Atributos para que Service Ops pueda enviarte la petición exacta (límite NR 255 bytes/atributo)
+                try:
+                    _max_attr = 255
+                    path_info = request.get('PATH_INFO') or request.environ.get('PATH_INFO') or ''
+                    add_nr_attr('path_info', path_info[:_max_attr])
+                    add_nr_attr('request_method', (request.get('REQUEST_METHOD') or request.environ.get('REQUEST_METHOD') or '')[: _max_attr])
+                    qs = request.get('QUERY_STRING') or request.environ.get('QUERY_STRING') or ''
+                    if qs:
+                        add_nr_attr('query_string', qs[:_max_attr])
+                    add_nr_attr('request_summary', '{} {} [{}] {}'.format(
+                        request.get('REQUEST_METHOD', request.environ.get('REQUEST_METHOD', '')),
+                        path_info,
+                        transname,
+                        user_id,
+                    )[:_max_attr])
+                except Exception:
+                    pass
                 if hasattr(published, 'context') and hasattr(published.context, 'absolute_url'):  # Plone
-                    newrelic.agent.add_custom_parameter('id', published.context.id)
-                    newrelic.agent.add_custom_parameter('absolute_url', published.context.absolute_url())
+                    add_nr_attr('id', published.context.id)
+                    add_nr_attr('absolute_url', published.context.absolute_url())
                 elif hasattr(published, 'id') and hasattr(published, 'absolute_url'):  # Zope
-                    newrelic.agent.add_custom_parameter('id', published.id)
-                    newrelic.agent.add_custom_parameter('absolute_url', published.absolute_url())
+                    add_nr_attr('id', published.id)
+                    add_nr_attr('absolute_url', published.absolute_url())
                 else:
                     # We don't know what it is .. so no custom parameters!
                     logger.debug("Published has no context nor an id/absolute_url. Skipping custom parameters")
@@ -78,10 +113,18 @@ def newrelic_transaction(event):
 
 def newrelic_precommit(event):
     request = event.request
+    # Total de llamadas al catálogo en esta transacción (correlacionar span lento → catalog_query_N)
+    try:
+        from collective.newrelic.patches.catalog_tool import get_catalog_call_count
+        n = get_catalog_call_count()
+        if n:
+            add_nr_attr('catalog_call_count', n)
+    except Exception:
+        pass
     for object in request.get('PARENTS', ())[::1]:
         conn = getattr(object, '_p_jar', None)
         if conn is not None and getattr(conn, 'getTransferCounts', None):
             loaded, stored = conn.getTransferCounts()
-            newrelic.agent.add_custom_parameter('zodb_loaded', loaded)
-            newrelic.agent.add_custom_parameter('zodb_stored', stored)
+            add_nr_attr('zodb_loaded', loaded)
+            add_nr_attr('zodb_stored', stored)
             break

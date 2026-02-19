@@ -35,9 +35,13 @@ from collective.newrelic.utils import logger
 
 
 try:
-# if the environment var was set, use this instead of the default (local) newrelic ini file
-    config_file = os.environ.get('NEW_RELIC_CONFIG_FILE', 'newrelic.ini' )
-    newrelic.agent.initialize(config_file)
-    logger.info('New Relic Python Agent configuration set from %s.' % config_file)
-except:
+    # Only initialize if not already done (e.g. by buildout script before Zope starts)
+    config = newrelic.agent.global_settings()
+    if config is None or not getattr(config, 'license_key', None):
+        config_file = os.environ.get('NEW_RELIC_CONFIG_FILE', 'newrelic.ini')
+        newrelic.agent.initialize(config_file)
+        logger.info('New Relic Python Agent configuration set from %s.', config_file)
+    else:
+        logger.info('New Relic already initialized, skipping duplicate initialize.')
+except Exception:
     pass
